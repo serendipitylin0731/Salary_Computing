@@ -1,0 +1,10 @@
+{
+  "grade_evening": {
+    "1": 60.0,
+    "2": 65.0,
+    "3": 70.0
+  },
+  "evening_reading": 7.0,
+  "noon": 25.0,
+  "afternoon": 7.0
+}

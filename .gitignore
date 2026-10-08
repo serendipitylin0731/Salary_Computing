@@ -1,0 +1,8 @@
+__pycache__/
+__cntcache__/
+build/
+dist/
+*.spec
+docs/
+example/
+tests/
