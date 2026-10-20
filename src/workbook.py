@@ -24,6 +24,8 @@ REQUIRED_COLUMNS = ("姓名", "晚自修", "高中中午", "全程下午")
 WEEKEND_MONITOR_COLUMN = "周六日监考"
 WEEKEND_COLUMN = "周六日"
 HOLIDAY_COLUMN = "节假日"
+WEEKEND_AMOUNT_PREFIX = "周六日金额"
+HOLIDAY_AMOUNT_PREFIX = "节假日金额"
 WEEKEND_SOURCE_COLUMN = "周六日上课"
 HOLIDAY_SOURCE_COLUMN = "节假日补课"
 SUPPLEMENTAL_COLUMNS = ("姓名", WEEKEND_COLUMN, HOLIDAY_COLUMN)
@@ -577,6 +579,8 @@ class TemplateRepository:
                 "晚读金额",
                 "中午金额",
                 "下午金额",
+                WEEKEND_AMOUNT_PREFIX,
+                HOLIDAY_AMOUNT_PREFIX,
             )
             missing.extend(
                 prefix for prefix in amount_prefixes if not any(label.startswith(prefix) for label in labels)
@@ -598,6 +602,8 @@ class TemplateRepository:
                 "晚读金额": rates.evening_reading,
                 "中午金额": rates.noon,
                 "下午金额": rates.afternoon,
+                WEEKEND_AMOUNT_PREFIX: rates.weekend,
+                HOLIDAY_AMOUNT_PREFIX: rates.holiday,
             }
             found = set()
             for cell, label in headers:
@@ -753,6 +759,8 @@ class SalaryCalculator:
         evening_amount = self._amount_column(columns, "晚读金额")
         noon_amount = self._amount_column(columns, "中午金额")
         afternoon_amount = self._amount_column(columns, "下午金额")
+        weekend_amount = self._amount_column(columns, WEEKEND_AMOUNT_PREFIX)
+        holiday_amount = self._amount_column(columns, HOLIDAY_AMOUNT_PREFIX)
         required = [
             "姓名",
             grade_count,
@@ -825,7 +833,18 @@ class SalaryCalculator:
         amount_columns = [
             label
             for label in columns
-            if label.startswith(("G1晚金额", "G2晚金额", "G3晚金额", "晚读金额", "中午金额", "下午金额"))
+            if label.startswith(
+                (
+                    "G1晚金额",
+                    "G2晚金额",
+                    "G3晚金额",
+                    "晚读金额",
+                    "中午金额",
+                    "下午金额",
+                    WEEKEND_AMOUNT_PREFIX,
+                    HOLIDAY_AMOUNT_PREFIX,
+                )
+            )
         ] + ["合计金额"]
         for row in teacher_rows.values():
             for label in count_columns + amount_columns:
@@ -841,9 +860,15 @@ class SalaryCalculator:
             worksheet.cell(row, columns["高中中午"]).value = display_number(noon)
             worksheet.cell(row, columns["全程下午"]).value = display_number(afternoon)
             worksheet.cell(row, columns[WEEKEND_COLUMN]).value = display_number(
-                values[WEEKEND_COLUMN] * self.rates.weekend
+                values[WEEKEND_COLUMN]
             )
             worksheet.cell(row, columns[HOLIDAY_COLUMN]).value = display_number(
+                values[HOLIDAY_COLUMN]
+            )
+            worksheet.cell(row, columns[weekend_amount]).value = display_number(
+                values[WEEKEND_COLUMN] * self.rates.weekend
+            )
+            worksheet.cell(row, columns[holiday_amount]).value = display_number(
                 values[HOLIDAY_COLUMN] * self.rates.holiday
             )
             worksheet.cell(row, columns[grade_amount]).value = display_number(
@@ -860,8 +885,19 @@ class SalaryCalculator:
         all_amount_columns = [
             label
             for label in columns
-            if label.startswith(("G1晚金额", "G2晚金额", "G3晚金额", "晚读金额", "中午金额", "下午金额"))
-        ] + [WEEKEND_COLUMN, HOLIDAY_COLUMN]
+            if label.startswith(
+                (
+                    "G1晚金额",
+                    "G2晚金额",
+                    "G3晚金额",
+                    "晚读金额",
+                    "中午金额",
+                    "下午金额",
+                    WEEKEND_AMOUNT_PREFIX,
+                    HOLIDAY_AMOUNT_PREFIX,
+                )
+            )
+        ]
         total_amount = 0.0
         for row in teacher_rows.values():
             total = sum(float(worksheet.cell(row, columns[label]).value or 0) for label in all_amount_columns)
@@ -914,6 +950,8 @@ class SalaryCalculator:
             "晚读金额": self.rates.evening_reading,
             "中午金额": self.rates.noon,
             "下午金额": self.rates.afternoon,
+            WEEKEND_AMOUNT_PREFIX: self.rates.weekend,
+            HOLIDAY_AMOUNT_PREFIX: self.rates.holiday,
         }
         for prefix, rate in rates.items():
             label = self._amount_column(columns, prefix)
@@ -936,7 +974,7 @@ class SalaryCalculator:
             for col in range(1, worksheet.max_column + 1):
                 worksheet.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
             for label, col in columns.items():
-                if "金额" in label or label in {WEEKEND_COLUMN, HOLIDAY_COLUMN}:
+                if "金额" in label:
                     worksheet.cell(row, col).number_format = '#,##0.00'
         worksheet.column_dimensions["B"].width = max(12, worksheet.column_dimensions["B"].width or 0)
 
