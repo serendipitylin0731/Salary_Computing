@@ -20,6 +20,14 @@ from .models import CalculationResult, CellIssue, ExpectedTotals, WorkbookDocume
 
 
 REQUIRED_COLUMNS = ("姓名", "晚自修", "高中中午", "全程下午")
+WEEKEND_MONITOR_COLUMN = "周六日监考"
+WEEKEND_COLUMN = "周六日"
+HOLIDAY_COLUMN = "节假日"
+WEEKEND_SOURCE_COLUMN = "周六日上课"
+HOLIDAY_SOURCE_COLUMN = "节假日补课"
+SUPPLEMENTAL_COLUMNS = ("姓名", WEEKEND_COLUMN, HOLIDAY_COLUMN)
+CLASS_DOCUMENT = "class"
+SUPPLEMENTAL_DOCUMENT = "weekend_holiday"
 SUPPORTED_SUFFIXES = {".xlsx", ".xlsm"}
 ALL_EXCEL_SUFFIXES = {".xlsx", ".xlsm", ".xls"}
 
@@ -33,6 +41,16 @@ def normalize_text(value: Any) -> str:
     if value is None:
         return ""
     return re.sub(r"\s+", "", str(value)).strip()
+
+
+def _is_weekend_source_header(label: str) -> bool:
+    return label in {WEEKEND_COLUMN, WEEKEND_SOURCE_COLUMN} or (
+        "周六" in label and "上课" in label
+    )
+
+
+def _is_holiday_source_header(label: str) -> bool:
+    return label in {HOLIDAY_COLUMN, HOLIDAY_SOURCE_COLUMN} or "节假日" in label
 
 
 def recommend_template_name(
@@ -77,17 +95,24 @@ def display_number(value: float) -> int | float:
 
 def document_metric_totals(doc: WorkbookDocument) -> dict[str, float]:
     """读取单个班级文件的实际合计；无效列不会参与默认值推断。"""
-    if doc.load_error or any(label not in doc.columns for label in REQUIRED_COLUMNS):
+    if (
+        doc.document_type != CLASS_DOCUMENT
+        or doc.load_error
+        or any(label not in doc.columns for label in REQUIRED_COLUMNS)
+    ):
         return {}
     has_data = False
     totals: dict[str, float] = {}
-    for label in REQUIRED_COLUMNS[1:]:
+    metric_labels = list(REQUIRED_COLUMNS[1:])
+    if WEEKEND_MONITOR_COLUMN in doc.columns:
+        metric_labels.append(WEEKEND_MONITOR_COLUMN)
+    for label in metric_labels:
         total = 0.0
         valid = True
         column = doc.columns[label]
         for row in range(doc.header_row + 1, len(doc.values) + 1):
             name_value = doc.cell(row, doc.columns["姓名"])
-            metric_values = [doc.cell(row, doc.columns[item]) for item in REQUIRED_COLUMNS[1:]]
+            metric_values = [doc.cell(row, doc.columns[item]) for item in metric_labels]
             row_has_data = bool(normalize_text(name_value)) or any(
                 value is not None and not (isinstance(value, str) and not value.strip())
                 for value in metric_values
@@ -109,9 +134,10 @@ def infer_expected_totals(
     documents: Iterable[WorkbookDocument],
     fallback: ExpectedTotals | None = None,
 ) -> ExpectedTotals:
-    """按各班实际合计的众数推断三个默认核对值。并列时采用先导入的值。"""
+    """按各班实际合计的众数推断四个默认核对值。并列时采用先导入的值。"""
     fallback = fallback or ExpectedTotals(0, 0, 0)
-    values: dict[str, list[float]] = {label: [] for label in REQUIRED_COLUMNS[1:]}
+    metric_labels = (*REQUIRED_COLUMNS[1:], WEEKEND_MONITOR_COLUMN)
+    values: dict[str, list[float]] = {label: [] for label in metric_labels}
     for document in documents:
         for label, total in document_metric_totals(document).items():
             values[label].append(round(total, 9))
@@ -128,6 +154,9 @@ def infer_expected_totals(
         evening=most_common("晚自修", fallback.evening),
         noon=most_common("高中中午", fallback.noon),
         afternoon=most_common("全程下午", fallback.afternoon),
+        weekend_monitor=most_common(
+            WEEKEND_MONITOR_COLUMN, fallback.weekend_monitor
+        ),
     )
 
 
@@ -177,10 +206,11 @@ class WorkbookLoader:
             return doc
         try:
             workbook = load_workbook(path, data_only=True, read_only=True)
-            worksheet, header_row, columns = self._find_data_sheet(workbook)
+            worksheet, header_row, columns, document_type = self._find_data_sheet(workbook)
             doc.sheet_name = worksheet.title
             doc.header_row = header_row
             doc.columns = columns
+            doc.document_type = document_type
             last_row, last_col = self._used_bounds(worksheet, minimum_columns=4)
             doc.values = [
                 [worksheet.cell(row, col).value for col in range(1, last_col + 1)]
@@ -193,25 +223,37 @@ class WorkbookLoader:
         return doc
 
     @staticmethod
-    def _find_data_sheet(workbook: Any) -> tuple[Any, int, dict[str, int]]:
+    def _find_data_sheet(workbook: Any) -> tuple[Any, int, dict[str, int], str]:
         best: tuple[Any, int, dict[str, int]] | None = None
         best_score = -1
         for worksheet in workbook.worksheets:
             for row in range(1, min(worksheet.max_row, 20) + 1):
                 found: dict[str, int] = {}
+                supplemental: dict[str, int] = {}
                 for col in range(1, min(worksheet.max_column, 40) + 1):
                     label = normalize_text(worksheet.cell(row, col).value)
                     if label in REQUIRED_COLUMNS:
                         found[label] = col
+                    if label == WEEKEND_MONITOR_COLUMN:
+                        found[WEEKEND_MONITOR_COLUMN] = col
+                    if label == "姓名":
+                        supplemental["姓名"] = col
+                    elif _is_holiday_source_header(label):
+                        supplemental[HOLIDAY_COLUMN] = col
+                    elif _is_weekend_source_header(label):
+                        supplemental[WEEKEND_COLUMN] = col
+                if len(supplemental) == len(SUPPLEMENTAL_COLUMNS):
+                    return worksheet, row, supplemental, SUPPLEMENTAL_DOCUMENT
                 if len(found) > best_score:
                     best = worksheet, row, found
                     best_score = len(found)
-                if len(found) == len(REQUIRED_COLUMNS):
-                    return worksheet, row, found
+                if all(label in found for label in REQUIRED_COLUMNS):
+                    return worksheet, row, found, CLASS_DOCUMENT
         if best is None:
             worksheet = workbook.active
-            return worksheet, 1, {}
-        return best
+            return worksheet, 1, {}, CLASS_DOCUMENT
+        worksheet, row, found = best
+        return worksheet, row, found, CLASS_DOCUMENT
 
     @staticmethod
     def _used_bounds(worksheet: Any, minimum_columns: int) -> tuple[int, int]:
@@ -263,6 +305,9 @@ class WorkbookValidator:
 
         self._refresh_structure(doc)
 
+        if doc.document_type == SUPPLEMENTAL_DOCUMENT:
+            return self._validate_supplemental(doc)
+
         issues: list[CellIssue] = []
         missing = [name for name in REQUIRED_COLUMNS if name not in doc.columns]
         if missing:
@@ -278,11 +323,14 @@ class WorkbookValidator:
             doc.issues = issues
             return issues
 
-        totals = {name: 0.0 for name in REQUIRED_COLUMNS[1:]}
+        totals = {name: 0.0 for name in expected.as_dict()}
         for row in range(doc.header_row + 1, len(doc.values) + 1):
             name_col = doc.columns["姓名"]
             name_value = doc.cell(row, name_col)
-            metric_values = [doc.cell(row, doc.columns[label]) for label in REQUIRED_COLUMNS[1:]]
+            metric_labels = list(REQUIRED_COLUMNS[1:])
+            if WEEKEND_MONITOR_COLUMN in doc.columns:
+                metric_labels.append(WEEKEND_MONITOR_COLUMN)
+            metric_values = [doc.cell(row, doc.columns[label]) for label in metric_labels]
             if normalize_text(name_value) == "" and all(
                 value is None or (isinstance(value, str) and not value.strip()) for value in metric_values
             ):
@@ -304,14 +352,19 @@ class WorkbookValidator:
                     )
                 )
 
-            for label, value in zip(REQUIRED_COLUMNS[1:], metric_values):
+            for label, value in zip(metric_labels, metric_values):
                 col = doc.columns[label]
                 try:
-                    totals[label] += number_from_cell(value)
+                    if label in totals:
+                        totals[label] += number_from_cell(value)
+                    else:
+                        number_from_cell(value)
                 except (TypeError, ValueError) as exc:
                     issues.append(CellIssue(row, col, f"{label}数据无效：{exc}", "number"))
 
         for label, expected_total in expected.as_dict().items():
+            if label not in doc.columns:
+                continue
             if not math.isclose(totals[label], expected_total, rel_tol=0, abs_tol=1e-9):
                 issues.append(
                     CellIssue(
@@ -321,6 +374,72 @@ class WorkbookValidator:
                         "total",
                     )
                 )
+        doc.issues = issues
+        return issues
+
+    def _validate_supplemental(self, doc: WorkbookDocument) -> list[CellIssue]:
+        issues: list[CellIssue] = []
+        missing = [name for name in SUPPLEMENTAL_COLUMNS if name not in doc.columns]
+        if missing:
+            for name in missing:
+                issues.append(
+                    CellIssue(
+                        doc.header_row,
+                        self._first_blank_header_column(doc),
+                        f"缺少必需列“{name}”",
+                        "format",
+                    )
+                )
+            doc.issues = issues
+            return issues
+
+        seen_names: dict[str, int] = {}
+        for row in range(doc.header_row + 1, len(doc.values) + 1):
+            name_col = doc.columns["姓名"]
+            name_value = doc.cell(row, name_col)
+            metric_values = [doc.cell(row, doc.columns[label]) for label in SUPPLEMENTAL_COLUMNS[1:]]
+            if normalize_text(name_value) == "" and all(
+                value is None or (isinstance(value, str) and not value.strip())
+                for value in metric_values
+            ):
+                continue
+
+            name = normalize_text(name_value)
+            if not name:
+                issues.append(CellIssue(row, name_col, "姓名不能为空", "name"))
+            elif name not in self.template_names:
+                recommendation = self.recommend_name(name_value)
+                recommendation_text = ""
+                if recommendation:
+                    suggested_name, similarity = recommendation
+                    recommendation_text = f"；推荐“{suggested_name}”（相似度 {similarity:.0%}）"
+                issues.append(
+                    CellIssue(
+                        row,
+                        name_col,
+                        f"姓名“{name_value}”未在模板中找到{recommendation_text}",
+                        "name",
+                    )
+                )
+            elif name in seen_names:
+                issues.append(
+                    CellIssue(
+                        row,
+                        name_col,
+                        f"姓名“{name_value}”与第 {seen_names[name]} 行重复",
+                        "name",
+                    )
+                )
+            else:
+                seen_names[name] = row
+
+            for label, value in zip(SUPPLEMENTAL_COLUMNS[1:], metric_values):
+                col = doc.columns[label]
+                try:
+                    number_from_cell(value)
+                except (TypeError, ValueError) as exc:
+                    issues.append(CellIssue(row, col, f"{label}数据无效：{exc}", "number"))
+
         doc.issues = issues
         return issues
 
@@ -335,12 +454,24 @@ class WorkbookValidator:
             columns: dict[str, int] = {}
             for col, value in enumerate(doc.values[row - 1], start=1):
                 label = normalize_text(value)
-                if label in REQUIRED_COLUMNS:
+                if doc.document_type == SUPPLEMENTAL_DOCUMENT:
+                    if label == "姓名":
+                        columns["姓名"] = col
+                    elif _is_holiday_source_header(label):
+                        columns[HOLIDAY_COLUMN] = col
+                    elif _is_weekend_source_header(label):
+                        columns[WEEKEND_COLUMN] = col
+                elif label in REQUIRED_COLUMNS or label == WEEKEND_MONITOR_COLUMN:
                     columns[label] = col
             if len(columns) > len(best_columns):
                 best_row = row
                 best_columns = columns
-            if len(columns) == len(REQUIRED_COLUMNS):
+            required = (
+                SUPPLEMENTAL_COLUMNS
+                if doc.document_type == SUPPLEMENTAL_DOCUMENT
+                else REQUIRED_COLUMNS
+            )
+            if all(label in columns for label in required):
                 break
         doc.header_row = best_row
         doc.columns = best_columns
@@ -433,6 +564,8 @@ class TemplateRepository:
                 "晚读",
                 "高中中午",
                 "全程下午",
+                WEEKEND_COLUMN,
+                HOLIDAY_COLUMN,
                 "合计金额",
             }
             missing = sorted(required - set(labels))
@@ -596,8 +729,14 @@ class SalaryCalculator:
         if grade not in {"1", "2", "3"}:
             raise ValueError("年级必须是 1、2 或 3")
         documents = list(documents)
-        if not documents:
+        class_documents = [doc for doc in documents if doc.document_type == CLASS_DOCUMENT]
+        supplemental_documents = [
+            doc for doc in documents if doc.document_type == SUPPLEMENTAL_DOCUMENT
+        ]
+        if not class_documents:
             raise ValueError("没有可计算的班级文件")
+        if len(supplemental_documents) > 1:
+            raise ValueError("只能导入一份周六日及节假日年级统计表")
         if any(doc.issues for doc in documents):
             raise ValueError("仍有未解决的数据问题，不能生成工资表")
 
@@ -613,22 +752,54 @@ class SalaryCalculator:
         evening_amount = self._amount_column(columns, "晚读金额")
         noon_amount = self._amount_column(columns, "中午金额")
         afternoon_amount = self._amount_column(columns, "下午金额")
-        required = ["姓名", grade_count, "晚读", "高中中午", "全程下午", "合计金额"]
+        required = [
+            "姓名",
+            grade_count,
+            "晚读",
+            "高中中午",
+            "全程下午",
+            WEEKEND_COLUMN,
+            HOLIDAY_COLUMN,
+            "合计金额",
+        ]
         missing = [label for label in required if label not in columns]
         if missing:
             workbook.close()
             raise ValueError(f"模板缺少列：{'、'.join(missing)}")
 
         aggregates: dict[str, dict[str, float]] = defaultdict(
-            lambda: {"晚自修": 0.0, "高中中午": 0.0, "全程下午": 0.0}
+            lambda: {
+                "晚自修": 0.0,
+                "高中中午": 0.0,
+                "全程下午": 0.0,
+                WEEKEND_COLUMN: 0.0,
+                HOLIDAY_COLUMN: 0.0,
+            }
         )
-        for doc in documents:
+        for doc in class_documents:
             for row in range(doc.header_row + 1, len(doc.values) + 1):
                 name = normalize_text(doc.cell(row, doc.columns["姓名"]))
                 if not name:
                     continue
                 for label in REQUIRED_COLUMNS[1:]:
                     aggregates[name][label] += number_from_cell(doc.cell(row, doc.columns[label]))
+                if WEEKEND_MONITOR_COLUMN in doc.columns:
+                    aggregates[name][WEEKEND_COLUMN] += number_from_cell(
+                        doc.cell(row, doc.columns[WEEKEND_MONITOR_COLUMN])
+                    )
+
+        if supplemental_documents:
+            supplemental = supplemental_documents[0]
+            for row in range(supplemental.header_row + 1, len(supplemental.values) + 1):
+                name = normalize_text(supplemental.cell(row, supplemental.columns["姓名"]))
+                if not name:
+                    continue
+                aggregates[name][WEEKEND_COLUMN] += number_from_cell(
+                    supplemental.cell(row, supplemental.columns[WEEKEND_COLUMN])
+                )
+                aggregates[name][HOLIDAY_COLUMN] = number_from_cell(
+                    supplemental.cell(row, supplemental.columns[HOLIDAY_COLUMN])
+                )
 
         teacher_rows: dict[str, int] = {}
         for row in range(header_row + 1, worksheet.max_row + 1):
@@ -638,7 +809,16 @@ class SalaryCalculator:
 
         count_columns = [
             label
-            for label in ("G1晚", "G2晚", "G3晚", "晚读", "高中中午", "全程下午")
+            for label in (
+                "G1晚",
+                "G2晚",
+                "G3晚",
+                "晚读",
+                "高中中午",
+                "全程下午",
+                WEEKEND_COLUMN,
+                HOLIDAY_COLUMN,
+            )
             if label in columns
         ]
         amount_columns = [
@@ -659,6 +839,12 @@ class SalaryCalculator:
             worksheet.cell(row, columns["晚读"]).value = display_number(evening)
             worksheet.cell(row, columns["高中中午"]).value = display_number(noon)
             worksheet.cell(row, columns["全程下午"]).value = display_number(afternoon)
+            worksheet.cell(row, columns[WEEKEND_COLUMN]).value = display_number(
+                values[WEEKEND_COLUMN] * self.rates.weekend
+            )
+            worksheet.cell(row, columns[HOLIDAY_COLUMN]).value = display_number(
+                values[HOLIDAY_COLUMN] * self.rates.holiday
+            )
             worksheet.cell(row, columns[grade_amount]).value = display_number(
                 evening * self.rates.grade_evening[grade]
             )
@@ -674,7 +860,7 @@ class SalaryCalculator:
             label
             for label in columns
             if label.startswith(("G1晚金额", "G2晚金额", "G3晚金额", "晚读金额", "中午金额", "下午金额"))
-        ]
+        ] + [WEEKEND_COLUMN, HOLIDAY_COLUMN]
         total_amount = 0.0
         for row in teacher_rows.values():
             total = sum(float(worksheet.cell(row, columns[label]).value or 0) for label in all_amount_columns)
@@ -692,7 +878,8 @@ class SalaryCalculator:
             values=values,
             total_amount=total_amount,
             teacher_count=sum(1 for value in aggregates.values() if any(value.values())),
-            source_file_count=len(documents),
+            source_file_count=len(class_documents),
+            supplemental_file_count=len(supplemental_documents),
         )
 
     @staticmethod
@@ -747,7 +934,7 @@ class SalaryCalculator:
             for col in range(1, worksheet.max_column + 1):
                 worksheet.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
             for label, col in columns.items():
-                if "金额" in label:
+                if "金额" in label or label in {WEEKEND_COLUMN, HOLIDAY_COLUMN}:
                     worksheet.cell(row, col).number_format = '#,##0.00'
         worksheet.column_dimensions["B"].width = max(12, worksheet.column_dimensions["B"].width or 0)
 

@@ -6,5 +6,7 @@
   },
   "evening_reading": 7.0,
   "noon": 25.0,
-  "afternoon": 7.0
+  "afternoon": 7.0,
+  "weekend": 100.0,
+  "holiday": 150.0
 }

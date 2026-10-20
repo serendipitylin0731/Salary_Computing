@@ -231,6 +231,8 @@ class SalaryDialog(tk.Toplevel):
             ("reading", "晚读", rates.evening_reading),
             ("noon", "高中中午", rates.noon),
             ("afternoon", "全程下午", rates.afternoon),
+            ("weekend", "周六日", rates.weekend),
+            ("holiday", "节假日", rates.holiday),
         ]
         for row, (key, label, value) in enumerate(values):
             ttk.Label(panel, text=f"{label}（元/节）").grid(row=row, column=0, sticky="w", pady=5)
@@ -257,6 +259,8 @@ class SalaryDialog(tk.Toplevel):
                 evening_reading=parsed["reading"],
                 noon=parsed["noon"],
                 afternoon=parsed["afternoon"],
+                weekend=parsed["weekend"],
+                holiday=parsed["holiday"],
             )
             self.on_save(rates)
         except ValueError as exc:
@@ -435,8 +439,14 @@ class SalaryApp(tk.Tk):
             "evening": tk.StringVar(value="5"),
             "noon": tk.StringVar(value="5"),
             "afternoon": tk.StringVar(value="5"),
+            "weekend_monitor": tk.StringVar(value="0"),
         }
-        for text, key in (("晚自修总节数", "evening"), ("中午总节数", "noon"), ("下午总节数", "afternoon")):
+        for text, key in (
+            ("晚自修总节数", "evening"),
+            ("中午总节数", "noon"),
+            ("下午总节数", "afternoon"),
+            ("周六日监考总节数", "weekend_monitor"),
+        ):
             ttk.Label(options, text=text, style="Panel.TLabel").pack(side="left")
             ttk.Entry(options, textvariable=self.expected_vars[key], width=7).pack(side="left", padx=(6, 18))
         ttk.Button(
@@ -570,7 +580,7 @@ class SalaryApp(tk.Tk):
             cache_path = self.cache.copy_in(path, prefix=f"{index:03d}-")
             document = self.loader.load(path, cache_path)
             self.documents.append(document)
-        fallback = self._expected_totals(show_error=False) or ExpectedTotals(5, 5, 5)
+        fallback = self._expected_totals(show_error=False) or ExpectedTotals(5, 5, 5, 0)
         expected = infer_expected_totals(self.documents, fallback)
         self._set_expected_totals(expected)
         for document in self.documents:
@@ -580,7 +590,8 @@ class SalaryApp(tk.Tk):
             f"{self._status_summary()} 默认核对值已按班级实际合计的众数设置："
             f"晚自修 {_format_number(expected.evening)}，"
             f"中午 {_format_number(expected.noon)}，"
-            f"下午 {_format_number(expected.afternoon)}。"
+            f"下午 {_format_number(expected.afternoon)}，"
+            f"周六日监考 {_format_number(expected.weekend_monitor)}。"
         )
         if self.documents:
             first_issue = next((i for i, doc in enumerate(self.documents) if doc.issues), 0)
@@ -596,13 +607,16 @@ class SalaryApp(tk.Tk):
             return ExpectedTotals(**values)
         except ValueError as exc:
             if show_error:
-                messagebox.showerror("核对条件无效", f"三个核对总节数都必须是非负数字。\n{exc}")
+                messagebox.showerror("核对条件无效", f"四个核对总节数都必须是非负数字。\n{exc}")
             return None
 
     def _set_expected_totals(self, expected: ExpectedTotals) -> None:
         self.expected_vars["evening"].set(_format_number(expected.evening))
         self.expected_vars["noon"].set(_format_number(expected.noon))
         self.expected_vars["afternoon"].set(_format_number(expected.afternoon))
+        self.expected_vars["weekend_monitor"].set(
+            _format_number(expected.weekend_monitor)
+        )
 
     def _refresh_file_tree(self) -> None:
         selected = self.current_document_index
@@ -914,6 +928,7 @@ class SalaryApp(tk.Tk):
         self.output_grid.load(self.result.values, editable=False)
         self.output_summary_var.set(
             f"已汇总 {self.result.source_file_count} 个班级文件，"
+            f"并合并 {self.result.supplemental_file_count} 份周六日/节假日年级统计，"
             f"涉及 {self.result.teacher_count} 位教师，合计金额 {_format_number(self.result.total_amount)} 元。"
         )
         self.save_button.configure(state="normal")
@@ -974,7 +989,7 @@ class SalaryApp(tk.Tk):
                 self.rates,
             )
             self.validator = WorkbookValidator.from_template(self.paths.template)
-            expected = self._expected_totals(show_error=False) or ExpectedTotals(5, 5, 5)
+            expected = self._expected_totals(show_error=False) or ExpectedTotals(5, 5, 5, 0)
             for document in self.documents:
                 self.validator.validate(document, expected)
         except Exception as exc:

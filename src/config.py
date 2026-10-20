@@ -20,9 +20,11 @@ class AppPaths:
     @classmethod
     def from_root(cls, root: Path | str) -> "AppPaths":
         root_path = Path(root).resolve()
+        standard_template = root_path / "docs" / "教师津贴表格导入模版.xlsx"
+        template = standard_template if standard_template.exists() else root_path / "docs" / "module.xlsx"
         return cls(
             root=root_path,
-            template=root_path / "docs" / "module.xlsx",
+            template=template,
             salary=root_path / "salary.json",
             cache_root=root_path / "__cntcache__",
         )
@@ -36,6 +38,8 @@ class SalaryRates:
     evening_reading: float = 7.0
     noon: float = 25.0
     afternoon: float = 7.0
+    weekend: float = 100.0
+    holiday: float = 150.0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "SalaryRates":
@@ -53,6 +57,12 @@ class SalaryRates:
             noon=_non_negative_number(raw.get("noon", defaults.noon), "高中中午"),
             afternoon=_non_negative_number(
                 raw.get("afternoon", defaults.afternoon), "全程下午"
+            ),
+            weekend=_non_negative_number(
+                raw.get("weekend", defaults.weekend), "周六日"
+            ),
+            holiday=_non_negative_number(
+                raw.get("holiday", defaults.holiday), "节假日"
             ),
         )
 

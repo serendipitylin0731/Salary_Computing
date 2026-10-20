@@ -21,6 +21,7 @@ class CellIssue:
 class WorkbookDocument:
     source_path: Path
     cache_path: Path | None = None
+    document_type: str = "class"
     sheet_name: str = ""
     values: list[list[Any]] = field(default_factory=list)
     issues: list[CellIssue] = field(default_factory=list)
@@ -61,12 +62,14 @@ class ExpectedTotals:
     evening: float
     noon: float
     afternoon: float
+    weekend_monitor: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
         return {
             "晚自修": self.evening,
             "高中中午": self.noon,
             "全程下午": self.afternoon,
+            "周六日监考": self.weekend_monitor,
         }
 
 
@@ -78,3 +81,4 @@ class CalculationResult:
     total_amount: float
     teacher_count: int
     source_file_count: int
+    supplemental_file_count: int = 0
