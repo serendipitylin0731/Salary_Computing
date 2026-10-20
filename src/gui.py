@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 import math
 import tkinter as tk
 from pathlib import Path
@@ -18,6 +17,7 @@ from .workbook import (
     WorkbookLoader,
     WorkbookValidator,
     discover_excel_files,
+    export_calculation_result,
     find_name_occurrences,
     infer_expected_totals,
     normalize_text,
@@ -113,11 +113,14 @@ class ScrollableSpreadsheet(ttk.Frame):
         values: list[list[Any]],
         issue_positions: set[tuple[int, int]] | None = None,
         editable: bool = False,
+        header_row: int = 1,
+        column_widths: tuple[float, ...] | None = None,
     ) -> None:
         self.clear()
         self._values = values
         self._editable = editable
         issue_positions = issue_positions or set()
+        column_widths = column_widths or ()
         if not values:
             tk.Label(
                 self.inner,
@@ -130,6 +133,12 @@ class ScrollableSpreadsheet(ttk.Frame):
             return
 
         width = max((len(row) for row in values), default=1)
+
+        def display_column_width(column: int) -> int:
+            if column <= len(column_widths):
+                return max(7, min(24, round(column_widths[column - 1])))
+            return 14
+
         corner = tk.Label(
             self.inner,
             text="",
@@ -141,10 +150,11 @@ class ScrollableSpreadsheet(ttk.Frame):
         corner.grid(row=0, column=0, sticky="nsew")
         self._bind_scroll(corner)
         for col in range(1, width + 1):
+            display_width = display_column_width(col)
             column_label = tk.Label(
                 self.inner,
                 text=get_column_letter(col),
-                width=14,
+                width=display_width,
                 bg="#E8EEF5",
                 fg=NAVY,
                 font=("Microsoft YaHei UI", 9, "bold"),
@@ -168,16 +178,17 @@ class ScrollableSpreadsheet(ttk.Frame):
             self._bind_scroll(row_label)
             variable_row: list[tk.StringVar] = []
             for col_index in range(1, width + 1):
+                display_width = display_column_width(col_index)
                 value = row[col_index - 1] if col_index <= len(row) else None
                 variable = tk.StringVar(value="" if value is None else str(value))
                 is_issue = (row_index, col_index) in issue_positions
-                is_header = row_index == 1
+                is_header = row_index == header_row
                 background = RED if is_issue else ("#DCE6F1" if is_header else PANEL)
                 foreground = RED_TEXT if is_issue else NAVY if is_header else "#1F2937"
                 entry = tk.Entry(
                     self.inner,
                     textvariable=variable,
-                    width=14,
+                    width=display_width,
                     relief="solid",
                     bd=1,
                     bg=background,
@@ -925,7 +936,12 @@ class SalaryApp(tk.Tk):
             self._invalidate_result()
             messagebox.showerror("生成失败", str(exc))
             return
-        self.output_grid.load(self.result.values, editable=False)
+        self.output_grid.load(
+            self.result.values,
+            editable=False,
+            header_row=self.result.header_row,
+            column_widths=self.result.column_widths,
+        )
         self.output_summary_var.set(
             f"已汇总 {self.result.source_file_count} 个班级文件，"
             f"并合并 {self.result.supplemental_file_count} 份周六日/节假日年级统计，"
@@ -954,8 +970,8 @@ class SalaryApp(tk.Tk):
         if not destination:
             return
         try:
-            shutil.copy2(self.result.workbook_path, destination)
-        except OSError as exc:
+            export_calculation_result(self.result, Path(destination))
+        except (OSError, ValueError) as exc:
             messagebox.showerror("保存失败", str(exc))
             return
         self._set_status(f"已保存：{destination}")

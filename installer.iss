@@ -1,5 +1,5 @@
 #define AppName "教师津贴统计"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.1"
 #define AppExeName "SalaryComputing.exe"
 
 [Setup]

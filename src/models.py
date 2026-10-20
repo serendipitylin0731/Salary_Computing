@@ -82,3 +82,5 @@ class CalculationResult:
     teacher_count: int
     source_file_count: int
     supplemental_file_count: int = 0
+    header_row: int = 1
+    column_widths: tuple[float, ...] = ()

@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from .config import SalaryRates
 from .models import CalculationResult, CellIssue, ExpectedTotals, WorkbookDocument
@@ -871,7 +872,7 @@ class SalaryCalculator:
         workbook.save(output_path)
         workbook.close()
 
-        values = self._read_preview(output_path)
+        values, column_widths = self._read_preview(output_path)
         return CalculationResult(
             workbook_path=output_path,
             sheet_name=worksheet.title,
@@ -880,6 +881,8 @@ class SalaryCalculator:
             teacher_count=sum(1 for value in aggregates.values() if any(value.values())),
             source_file_count=len(class_documents),
             supplemental_file_count=len(supplemental_documents),
+            header_row=header_row,
+            column_widths=column_widths,
         )
 
     @staticmethod
@@ -929,7 +932,6 @@ class SalaryCalculator:
             cell.fill = header_fill
             cell.font = Font(color="FFFFFF", bold=True)
             cell.alignment = Alignment(horizontal="center", vertical="center")
-        worksheet.freeze_panes = worksheet.cell(header_row + 1, 3)
         for row in rows:
             for col in range(1, worksheet.max_column + 1):
                 worksheet.cell(row, col).alignment = Alignment(horizontal="center", vertical="center")
@@ -939,12 +941,57 @@ class SalaryCalculator:
         worksheet.column_dimensions["B"].width = max(12, worksheet.column_dimensions["B"].width or 0)
 
     @staticmethod
-    def _read_preview(path: Path) -> list[list[Any]]:
-        workbook = load_workbook(path, data_only=True, read_only=True)
-        worksheet = TemplateRepository._find_template_sheet(workbook)
-        values = [list(row) for row in worksheet.iter_rows(values_only=True)]
-        workbook.close()
-        return values
+    def _read_preview(path: Path) -> tuple[list[list[Any]], tuple[float, ...]]:
+        workbook = load_workbook(path, data_only=True)
+        try:
+            worksheet = TemplateRepository._find_template_sheet(workbook)
+            values = [list(row) for row in worksheet.iter_rows(values_only=True)]
+            column_widths = tuple(
+                float(
+                    worksheet.column_dimensions[get_column_letter(column)].width
+                    or 13.0
+                )
+                for column in range(1, worksheet.max_column + 1)
+            )
+            return values, column_widths
+        finally:
+            workbook.close()
+
+
+def export_calculation_result(
+    result: CalculationResult, destination: Path | str
+) -> Path:
+    """原子导出工资表，并确认导出内容与界面预览完全一致。"""
+    destination = Path(destination)
+    if destination.suffix.lower() != ".xlsx":
+        raise ValueError("导出文件必须使用 .xlsx 扩展名")
+    if not result.workbook_path.exists():
+        raise ValueError("工资预览缓存不存在，请重新生成后再导出")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(
+        f".{destination.stem}-{uuid.uuid4().hex}.tmp.xlsx"
+    )
+    try:
+        shutil.copy2(result.workbook_path, temporary)
+        workbook = load_workbook(temporary, data_only=True, read_only=True)
+        try:
+            if result.sheet_name not in workbook.sheetnames:
+                raise ValueError(f"导出文件缺少工作表“{result.sheet_name}”")
+            worksheet = workbook[result.sheet_name]
+            exported_values = [
+                list(row) for row in worksheet.iter_rows(values_only=True)
+            ]
+            if exported_values != result.values:
+                raise ValueError("导出文件内容不完整，与工资预览不一致")
+        finally:
+            workbook.close()
+        make_writable(temporary)
+        os.replace(temporary, destination)
+        return destination
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def save_document_edits(doc: WorkbookDocument) -> None:
